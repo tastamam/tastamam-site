@@ -160,15 +160,23 @@ function render(docs) {
     const lines = (o.lines || []).map((l) => `<div>${l.qty} × ${l.name}</div>`).join('');
     let pay = '';
     if (total > 0) {
-      if (o.paymentStatus === 'unpaid') pay = `<div class="pay due">Kasadan ödenecek: ${money(total)} — POS'a aktar</div>`;
+      if (o.paymentStatus === 'unpaid') pay = `<div class="pay due">Kasadan ödenecek: ${money(total)}. Önce POS'a gönder.</div>`;
+      else if (o.paymentStatus === 'sent_to_pos') pay = `<div class="pay due">POS'a gönderildi: ${money(total)}. Ödeme bekleniyor, henüz ödenmedi.</div>`;
       else if (o.paymentStatus === 'paid_counter') pay = `<div class="pay ok">Kasada ödendi</div>`;
       else pay = `<div class="pay ok">Kartla ödendi (test)</div>`;
     }
     el.innerHTML = `<span class="status">${statusLabel[o.status] || ''}</span><div class="place">${place(o)}</div>
       <div class="lines">${lines}</div>${o.freeMinor > 0 ? '<div class="muted">Bedava kahve kullanıldı</div>' : ''}${pay}`;
     if (total > 0 && o.paymentStatus === 'unpaid') {
+      const b = document.createElement('button'); b.textContent = "POS'a gönder";
+      b.onclick = () => act(d.id, { paymentStatus: 'sent_to_pos' }); el.appendChild(b);
+    }
+    if (total > 0 && o.paymentStatus === 'sent_to_pos') {
       const b = document.createElement('button'); b.className = 'alt'; b.textContent = 'Ödeme alındı';
-      b.onclick = () => act(d.id, { paymentStatus: 'paid_counter' }); el.appendChild(b);
+      b.onclick = () => { if (confirm(`POS cihazında ${money(total)} tutarlı işlem başarıyla tamamlandı mı? Ödeme alınmadan onaylama.`)) act(d.id, { paymentStatus: 'paid_counter' }); };
+      el.appendChild(b);
+      const c = document.createElement('button'); c.className = 'alt'; c.textContent = 'Alınamadı';
+      c.onclick = () => act(d.id, { paymentStatus: 'unpaid' }); el.appendChild(c);
     }
     if (o.status === 'preparing') {
       const b = document.createElement('button'); b.textContent = 'Hazır';
