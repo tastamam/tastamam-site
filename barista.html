@@ -8,19 +8,26 @@
 <link rel="stylesheet" href="style.css">
 <style>
   body{min-height:100vh}
-  .wrapw{max-width:1100px;margin:0 auto;padding:20px}
-  .bar{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:18px}
+  .wrapw{max-width:1180px;margin:0 auto;padding:18px}
+  .bar{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:12px}
   .bar h1{font-size:26px;margin:0}
   .pill{display:inline-block;padding:4px 12px;border-radius:999px;font-size:13px;font-weight:700;background:var(--line);color:var(--ink)}
-  .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:14px}
+  .tabs{display:flex;gap:8px;margin:10px 0 16px;flex-wrap:wrap}
+  .tab{border:2px solid var(--line);background:transparent;color:var(--ink);border-radius:14px;padding:10px 16px;font:inherit;font-weight:700;cursor:pointer;width:auto;margin:0}
+  .tab.on{background:var(--ink);color:var(--bg);border-color:var(--ink)}
+  .tab .n{display:inline-block;min-width:22px;padding:0 6px;margin-left:8px;border-radius:999px;background:var(--accent);color:#fff;font-size:13px;text-align:center}
+  .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:14px}
   .order{background:var(--card);border:1px solid var(--line);border-radius:18px;padding:16px}
   .order.new{outline:3px solid var(--accent)}
-  .place{font-size:26px;font-weight:800;letter-spacing:-.02em}
-  .status{float:right;font-size:13px;font-weight:700;color:var(--accent)}
+  .place{font-size:24px;font-weight:800;letter-spacing:-.02em}
+  .status{float:right;font-size:13px;font-weight:700;color:var(--accent);text-align:right;max-width:55%}
   .lines{margin:8px 0;font-size:16px}
-  .pay{border-radius:12px;padding:10px 12px;font-size:14px;font-weight:700;margin:8px 0}
-  .pay.due{background:#f6d9b8;color:#3a2a14}
-  .pay.ok{background:var(--line)}
+  .total{font-weight:800;margin:4px 0}
+  .box{border-radius:12px;padding:10px 12px;font-size:14px;font-weight:700;margin:8px 0}
+  .box.due{background:#f6d9b8;color:#3a2a14}
+  .box.ok{background:var(--line)}
+  .box.info{background:var(--line);font-weight:600}
+  .contact{font-size:14px;line-height:1.45}
   button{font:inherit;font-weight:700;border:0;border-radius:14px;padding:12px 16px;cursor:pointer;background:var(--ink);color:var(--bg);width:100%;margin-top:8px}
   button.alt{background:transparent;color:var(--ink);border:2px solid var(--ink)}
   button.small{width:auto;padding:8px 14px;margin:0}
@@ -45,15 +52,16 @@
     <div class="bar">
       <div>
         <h1 id="cafe">Barista ekranı</h1>
-        <span class="muted" id="count"></span>
+        <span class="muted" id="posinfo"></span>
       </div>
       <div>
         <span class="pill" id="conn">bağlanıyor…</span>
         <button class="alt small" id="sound">Sesi aç</button>
       </div>
     </div>
+    <div class="tabs" id="tabs"></div>
     <div id="orders" class="grid"></div>
-    <div id="empty" class="empty" hidden>Bekleyen sipariş yok. Yeni siparişler burada sesle birlikte belirir.</div>
+    <div id="empty" class="empty" hidden></div>
   </div>
 
   <div id="loading" class="center">Yükleniyor…</div>
@@ -75,14 +83,29 @@ const app = initializeApp({
 const auth = getAuth(app);
 const db = getFirestore(app);
 const $ = (id) => document.getElementById(id);
-const money = (m) => (m % 100 === 0 ? `${m / 100}₺` : `${(m / 100).toFixed(2)}₺`);
+const money = (m) => (m % 100 === 0 ? `${m / 100}₺` : `${(m / 100).toFixed(2).replace('.', ',')}₺`);
+const esc = (t) => String(t ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const QR_PREFIX = 'tastamam-barista:';
 
-let unsubDevice = null, unsubOrders = null, audioCtx = null, soundOn = false, known = new Set(), first = true;
+// Her işletme farklı POS kullanır. Şimdilik hiçbiri cihaza otomatik bağlı değil: tutar ekranda gösterilir, barista kendi POS'una girer.
+// Entegrasyon eklendikçe ilgili markanın "integrated" değeri true olacak ve "POS'a gönder" tutarı cihaza kendisi iletecek.
+const POS_BRANDS = {
+  other: 'Diğer / listede yok', ingenico: 'Ingenico', verifone: 'Verifone', pax: 'PAX', hugin: 'Hugin', beko: 'Beko',
+  inpos: 'Inpos', vera: 'Vera', garanti: 'Garanti BBVA POS', isbank: 'İş Bankası POS', akbank: 'Akbank POS',
+  yapikredi: 'Yapı Kredi POS', ziraat: 'Ziraat POS', halkbank: 'Halkbank POS', qnb: 'QNB POS', denizbank: 'DenizBank POS',
+  vakifbank: 'VakıfBank POS', teb: 'TEB POS', ing: 'ING POS', iyzico: 'iyzico', paytr: 'PayTR', param: 'Param',
+  paynet: 'Paynet', sipay: 'Sipay',
+};
 
-function show(which) {
-  for (const id of ['pairing', 'panel', 'loading']) $(id).hidden = id !== which;
-}
+let unsubDevice = null, unsubOrders = null, unsubDeliv = null, audioCtx = null, soundOn = false;
+let tab = 'table', biz = { id: '', name: '', posBrand: 'other' };
+let tableDocs = [], delivDocs = [];
+const knownIds = { table: new Set(), home: new Set(), pickup: new Set() };
+const firstLoad = { table: true, delivery: true };
+const newIds = new Set();
+const contacts = new Map();
+
+function show(which) { for (const id of ['pairing', 'panel', 'loading']) $(id).hidden = id !== which; }
 function fail(msg) { $('err').textContent = msg; }
 
 function randomCode() {
@@ -130,78 +153,174 @@ $('sound').onclick = () => {
   if (soundOn) beep();
 };
 
-async function keepAwake() {
-  try { if ('wakeLock' in navigator) await navigator.wakeLock.request('screen'); } catch (_) {}
-}
+async function keepAwake() { try { if ('wakeLock' in navigator) await navigator.wakeLock.request('screen'); } catch (_) {} }
 document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') keepAwake(); });
 
-const place = (o) => (o.mode === 'tableService' ? `Masa ${o.tableNo}` : `Kod ${o.code || '—'}`);
-const statusLabel = { preparing: 'Hazırlanıyor', ready: 'Hazır', served: 'Teslim edildi' };
+// ---- yardımcılar -----------------------------------------------------------------------------
 
-async function act(id, data) {
-  try { await updateDoc(doc(db, 'orders', id), { ...data, updatedAt: serverTimestamp() }); }
-  catch (e) { fail('İşlem yapılamadı. Bağlantını kontrol et.'); }
+async function write(col, id, data) {
+  try { await updateDoc(doc(db, col, id), { ...data, updatedAt: serverTimestamp() }); fail(''); }
+  catch (e) { fail('İşlem yapılamadı: durum başka bir yerden değişmiş olabilir. Bağlantını kontrol edip tekrar dene.'); }
 }
 
-function render(docs) {
-  const box = $('orders');
-  box.innerHTML = '';
-  $('empty').hidden = docs.length > 0;
-  $('count').textContent = `${docs.length} açık sipariş`;
-  const ids = new Set(docs.map((d) => d.id));
-  const added = docs.filter((d) => !known.has(d.id));
-  if (!first && added.length) beep();
-  known = ids; first = false;
-  for (const d of docs) {
-    const o = d.data();
-    const total = o.totalMinor || 0;
-    const el = document.createElement('div');
-    el.className = 'order' + (added.includes(d) && !first ? ' new' : '');
-    const lines = (o.lines || []).map((l) => `<div>${l.qty} × ${l.name}</div>`).join('');
-    let pay = '';
-    if (total > 0) {
-      if (o.paymentStatus === 'unpaid') pay = `<div class="pay due">Kasadan ödenecek: ${money(total)}. Önce POS'a gönder.</div>`;
-      else if (o.paymentStatus === 'sent_to_pos') pay = `<div class="pay due">POS'a gönderildi: ${money(total)}. Ödeme bekleniyor, henüz ödenmedi.</div>`;
-      else if (o.paymentStatus === 'paid_counter') pay = `<div class="pay ok">Kasada ödendi</div>`;
-      else pay = `<div class="pay ok">Kartla ödendi (test)</div>`;
-    }
-    el.innerHTML = `<span class="status">${statusLabel[o.status] || ''}</span><div class="place">${place(o)}</div>
-      <div class="lines">${lines}</div>${o.freeMinor > 0 ? '<div class="muted">Bedava kahve kullanıldı</div>' : ''}${pay}`;
-    if (total > 0 && o.paymentStatus === 'unpaid') {
-      const b = document.createElement('button'); b.textContent = "POS'a gönder";
-      b.onclick = () => act(d.id, { paymentStatus: 'sent_to_pos' }); el.appendChild(b);
-    }
-    if (total > 0 && o.paymentStatus === 'sent_to_pos') {
-      const b = document.createElement('button'); b.className = 'alt'; b.textContent = 'Ödeme alındı';
-      b.onclick = () => { if (confirm(`POS cihazında ${money(total)} tutarlı işlem başarıyla tamamlandı mı? Ödeme alınmadan onaylama.`)) act(d.id, { paymentStatus: 'paid_counter' }); };
-      el.appendChild(b);
-      const c = document.createElement('button'); c.className = 'alt'; c.textContent = 'Alınamadı';
-      c.onclick = () => act(d.id, { paymentStatus: 'unpaid' }); el.appendChild(c);
-    }
-    if (o.status === 'preparing') {
-      const b = document.createElement('button'); b.textContent = 'Hazır';
-      b.onclick = () => act(d.id, { status: 'ready' }); el.appendChild(b);
-    } else if (o.status === 'ready') {
-      const b = document.createElement('button'); b.textContent = 'Teslim edildi';
-      b.onclick = () => act(d.id, { status: 'served' }); el.appendChild(b);
-    }
-    box.appendChild(el);
+function sendToPos(col, id, total) {
+  const label = POS_BRANDS[biz.posBrand] || POS_BRANDS.other;
+  const ok = confirm(`POS cihazına şu tutarı girin:\n\n${money(total)}\n\nPOS: ${label}\nTutarı girip işlemi başlattıysanız Tamam'a basın.\n(Şu an POS'a otomatik gönderim yok; tutarı siz girersiniz.)`);
+  if (ok) write(col, id, { paymentStatus: 'sent_to_pos' });
+}
+function confirmPaid(col, id, total) {
+  if (confirm(`POS cihazında ${money(total)} tutarlı işlem başarıyla tamamlandı mı?\nÖdeme alınmadan onaylama.`)) write(col, id, { paymentStatus: 'paid_counter' });
+}
+
+function btn(text, onclick, alt = false) {
+  const b = document.createElement('button');
+  b.textContent = text; if (alt) b.className = 'alt'; b.onclick = onclick; return b;
+}
+
+function payBlock(el, col, id, o, total) {
+  if (!(total > 0)) return;
+  const method = o.paymentMethod, st = o.paymentStatus;
+  const box = document.createElement('div');
+  if (method === 'card_test' || st === 'paid_test') { box.className = 'box ok'; box.textContent = 'Kartla ödendi (test modu)'; el.appendChild(box); return; }
+  if (st === 'paid_counter') { box.className = 'box ok'; box.textContent = 'Kasada ödendi'; el.appendChild(box); return; }
+  box.className = 'box due';
+  box.textContent = st === 'sent_to_pos'
+    ? `POS'a gönderildi: ${money(total)}. Ödeme bekleniyor, henüz ödenmedi.`
+    : `Kasadan ödenecek: ${money(total)}. Önce POS'a gönder.`;
+  el.appendChild(box);
+  if (st === 'unpaid') el.appendChild(btn("POS'a gönder", () => sendToPos(col, id, total)));
+  if (st === 'sent_to_pos') {
+    el.appendChild(btn('Ödeme alındı', () => confirmPaid(col, id, total), true));
+    el.appendChild(btn('Alınamadı', () => write(col, id, { paymentStatus: 'unpaid' }), true));
   }
 }
 
+// ---- sipariş kartları ----------------------------------------------------------------------------
+
+const tableStatus = { preparing: 'Hazırlanıyor', ready: 'Hazır', served: 'Teslim edildi' };
+const delivStatus = {
+  placed: 'Sipariş alındı', preparing: 'Hazırlanıyor', courier_requested: 'Kurye aranıyor', own_courier: 'Kendi kuryemizle yolda',
+  courier_assigned: 'Kurye siparişi üstlendi', handed_to_courier: 'Kuryeye teslim edildi', picked_up: 'Kurye yolda', ready: 'Hazır, müşteri bekleniyor',
+};
+
+function tableCard(d) {
+  const o = d.data(), total = o.totalMinor || 0;
+  const el = document.createElement('div');
+  el.className = 'order' + (newIds.has(d.id) ? ' new' : '');
+  const place = o.mode === 'tableService' ? `Masa ${esc(o.tableNo)}` : `Kod ${esc(o.code || '—')}`;
+  el.innerHTML = `<span class="status">${tableStatus[o.status] || ''}</span><div class="place">${place}</div>
+    <div class="lines">${(o.lines || []).map((l) => `<div>${esc(l.qty)} × ${esc(l.name)}</div>`).join('')}</div>${o.freeMinor > 0 ? '<div class="muted">Bedava kahve kullanıldı</div>' : ''}`;
+  payBlock(el, 'orders', d.id, o, total);
+  if (o.status === 'preparing') el.appendChild(btn('Hazır', () => write('orders', d.id, { status: 'ready' })));
+  else if (o.status === 'ready') el.appendChild(btn('Teslim edildi', () => write('orders', d.id, { status: 'served' })));
+  return el;
+}
+
+function deliveryCard(d) {
+  const o = d.data(), total = o.totalMinor || 0, home = o.kind === 'home';
+  const el = document.createElement('div');
+  el.className = 'order' + (newIds.has(d.id) ? ' new' : '');
+  el.innerHTML = `<span class="status">${esc(delivStatus[o.status] || '')}</span>
+    <div class="place">${home ? 'Eve sipariş' : `Gel-Al ${esc(o.pickupTime || '')}`}</div>
+    <div class="contact" data-contact="${esc(d.id)}">Müşteri bilgisi yükleniyor…</div>
+    <div class="lines">${(o.lines || []).map((l) => `<div>${esc(l.qty)} × ${esc(l.name)}</div>`).join('')}</div>
+    <div class="total">Toplam ${money(total)}</div>`;
+  if (o.courierName && home) {
+    const c = document.createElement('div'); c.className = 'box info';
+    c.textContent = `Kurye: ${o.courierName}${o.courierPhone ? ' · ' + o.courierPhone : ''}`; el.appendChild(c);
+  }
+  payBlock(el, 'deliveries', d.id, o, total);
+  const s = o.status;
+  if (s === 'placed') el.appendChild(btn('Hazırla', () => write('deliveries', d.id, { status: 'preparing' })));
+  if (home) {
+    if (s === 'preparing') {
+      el.appendChild(btn('Kurye çağır', () => write('deliveries', d.id, { status: 'courier_requested' })));
+      el.appendChild(btn('Kendi kuryemle göndereceğim', () => write('deliveries', d.id, { status: 'own_courier' }), true));
+    }
+    if (s === 'courier_requested') {
+      const b = document.createElement('div'); b.className = 'box info'; b.textContent = 'Yakındaki kuryelere duyuruldu. İlk basan kurye alır.'; el.appendChild(b);
+      el.appendChild(btn('Kurye çağrısını iptal et', () => write('deliveries', d.id, { status: 'preparing' }), true));
+    }
+    if (s === 'courier_assigned') el.appendChild(btn('Kuryeye teslim et', () => write('deliveries', d.id, { status: 'handed_to_courier' })));
+    if (s === 'handed_to_courier') { const b = document.createElement('div'); b.className = 'box info'; b.textContent = 'Kurye teslim aldığını onaylayınca yola çıkar.'; el.appendChild(b); }
+    if (s === 'picked_up') { const b = document.createElement('div'); b.className = 'box info'; b.textContent = 'Kurye yolda. Teslim edince kendisi onaylar.'; el.appendChild(b); }
+    if (s === 'own_courier') el.appendChild(btn('Teslim edildi', () => write('deliveries', d.id, { status: 'delivered' })));
+  } else {
+    if (s === 'preparing') el.appendChild(btn('Hazır', () => write('deliveries', d.id, { status: 'ready' })));
+    if (s === 'ready') el.appendChild(btn('Müşteri teslim aldı', () => write('deliveries', d.id, { status: 'collected' })));
+  }
+  return el;
+}
+
+async function fillContacts() {
+  for (const node of document.querySelectorAll('[data-contact]')) {
+    const id = node.getAttribute('data-contact');
+    if (!contacts.has(id)) {
+      try { const snap = await getDoc(doc(db, 'deliveries', id, 'private', 'contact')); contacts.set(id, snap.exists() ? snap.data() : null); }
+      catch (_) { contacts.set(id, null); }
+    }
+    const c = contacts.get(id);
+    node.innerHTML = c
+      ? `<strong>${esc(c.name)}</strong> · <a href="tel:${esc(c.phone)}">${esc(c.phone)}</a>${c.address ? `<br>${esc(c.address)}` : ''}`
+      : '<span class="muted">Müşteri bilgisi okunamadı.</span>';
+  }
+}
+
+function render() {
+  const homeDocs = delivDocs.filter((d) => d.data().kind === 'home');
+  const pickDocs = delivDocs.filter((d) => d.data().kind === 'pickup');
+  const defs = [['table', 'Masa / Kasa', tableDocs], ['home', 'Eve sipariş', homeDocs], ['pickup', 'Gel-Al', pickDocs]];
+  const tabs = $('tabs'); tabs.innerHTML = '';
+  for (const [key, label, list] of defs) {
+    const b = document.createElement('button');
+    b.className = 'tab' + (tab === key ? ' on' : '');
+    b.innerHTML = `${label}${list.length ? `<span class="n">${list.length}</span>` : ''}`;
+    b.onclick = () => { tab = key; render(); };
+    tabs.appendChild(b);
+  }
+  const current = defs.find((x) => x[0] === tab)[2];
+  const box = $('orders'); box.innerHTML = '';
+  $('empty').hidden = current.length > 0;
+  $('empty').textContent = tab === 'table' ? 'Bekleyen masa/kasa siparişi yok.' : tab === 'home' ? 'Bekleyen eve sipariş yok.' : 'Bekleyen Gel-Al siparişi yok.';
+  for (const d of current) box.appendChild(tab === 'table' ? tableCard(d) : deliveryCard(d));
+  fillContacts();
+}
+
+function trackNew(kind, docs, flag) {
+  const ids = new Set(docs.map((d) => d.id));
+  const added = docs.filter((d) => !knownIds[kind].has(d.id));
+  if (!firstLoad[flag] && added.length) { beep(); added.forEach((d) => newIds.add(d.id)); setTimeout(() => { added.forEach((d) => newIds.delete(d.id)); render(); }, 15000); }
+  knownIds[kind] = ids;
+}
+
 async function startPanel(businessId) {
-  show('panel');
-  keepAwake();
-  const biz = await getDoc(doc(db, 'businesses', businessId)).catch(() => null);
-  if (biz && biz.exists()) $('cafe').textContent = biz.data().name;
+  show('panel'); keepAwake();
+  biz.id = businessId;
+  const snap = await getDoc(doc(db, 'businesses', businessId)).catch(() => null);
+  if (snap && snap.exists()) { biz.name = snap.data().name; biz.posBrand = snap.data().posBrand || 'other'; }
+  $('cafe').textContent = biz.name || 'Barista ekranı';
+  $('posinfo').textContent = `POS: ${POS_BRANDS[biz.posBrand] || POS_BRANDS.other}`;
   if (unsubOrders) unsubOrders();
-  const q = query(collection(db, 'orders'), where('businessId', '==', businessId), where('status', 'in', ['preparing', 'ready']), orderBy('createdAt', 'desc'));
-  unsubOrders = onSnapshot(q, (snap) => { $('conn').textContent = 'canlı'; render(snap.docs); },
+  if (unsubDeliv) unsubDeliv();
+  firstLoad.table = true; firstLoad.delivery = true;
+  unsubOrders = onSnapshot(
+    query(collection(db, 'orders'), where('businessId', '==', businessId), where('status', 'in', ['preparing', 'ready']), orderBy('createdAt', 'desc')),
+    (s) => { $('conn').textContent = 'canlı'; tableDocs = s.docs; trackNew('table', tableDocs, 'table'); firstLoad.table = false; render(); },
     () => { $('conn').textContent = 'bağlantı sorunu'; fail('Siparişler okunamadı. Yetki kaldırılmış olabilir; sayfayı yenile.'); });
+  const open = ['placed', 'preparing', 'courier_requested', 'own_courier', 'courier_assigned', 'handed_to_courier', 'picked_up', 'ready'];
+  unsubDeliv = onSnapshot(
+    query(collection(db, 'deliveries'), where('businessId', '==', businessId), where('status', 'in', open), orderBy('createdAt', 'desc')),
+    (s) => {
+      delivDocs = s.docs;
+      trackNew('home', delivDocs.filter((d) => d.data().kind === 'home'), 'delivery');
+      trackNew('pickup', delivDocs.filter((d) => d.data().kind === 'pickup'), 'delivery');
+      firstLoad.delivery = false; render();
+    },
+    () => fail('Eve/Gel-Al siparişleri okunamadı. Sayfayı yenile.'));
 }
 
 onAuthStateChanged(auth, async (user) => {
-  if (!user) { try { await signInAnonymously(auth); } catch (e) { show('loading'); $('loading').textContent = ''; fail('Oturum açılamadı. Yönetici Firebase\'de anonim girişi açmamış olabilir.'); } return; }
+  if (!user) { try { await signInAnonymously(auth); } catch (e) { show('loading'); $('loading').textContent = ''; fail('Oturum açılamadı. Firebase\'de anonim giriş kapalı olabilir.'); } return; }
   if (unsubDevice) unsubDevice();
   let current = null;
   unsubDevice = onSnapshot(doc(db, 'baristaDevices', user.uid), async (snap) => {
@@ -211,6 +330,7 @@ onAuthStateChanged(auth, async (user) => {
     } else {
       current = null;
       if (unsubOrders) { unsubOrders(); unsubOrders = null; }
+      if (unsubDeliv) { unsubDeliv(); unsubDeliv = null; }
       await showPairing(user.uid);
     }
   }, () => fail('Cihaz bilgisi okunamadı.'));
