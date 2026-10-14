@@ -1,0 +1,212 @@
+<!doctype html>
+<html lang="tr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="robots" content="noindex">
+<title>Barista ekranı · Tastamam</title>
+<link rel="stylesheet" href="style.css">
+<style>
+  body{min-height:100vh}
+  .wrapw{max-width:1100px;margin:0 auto;padding:20px}
+  .bar{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:18px}
+  .bar h1{font-size:26px;margin:0}
+  .pill{display:inline-block;padding:4px 12px;border-radius:999px;font-size:13px;font-weight:700;background:var(--line);color:var(--ink)}
+  .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:14px}
+  .order{background:var(--card);border:1px solid var(--line);border-radius:18px;padding:16px}
+  .order.new{outline:3px solid var(--accent)}
+  .place{font-size:26px;font-weight:800;letter-spacing:-.02em}
+  .status{float:right;font-size:13px;font-weight:700;color:var(--accent)}
+  .lines{margin:8px 0;font-size:16px}
+  .pay{border-radius:12px;padding:10px 12px;font-size:14px;font-weight:700;margin:8px 0}
+  .pay.due{background:#f6d9b8;color:#3a2a14}
+  .pay.ok{background:var(--line)}
+  button{font:inherit;font-weight:700;border:0;border-radius:14px;padding:12px 16px;cursor:pointer;background:var(--ink);color:var(--bg);width:100%;margin-top:8px}
+  button.alt{background:transparent;color:var(--ink);border:2px solid var(--ink)}
+  button.small{width:auto;padding:8px 14px;margin:0}
+  #qr{display:inline-block;background:#fff;padding:16px;border-radius:16px}
+  .center{text-align:center;padding:40px 16px}
+  .muted{color:var(--soft)}
+  .empty{padding:40px;text-align:center;color:var(--soft);font-size:18px}
+  #err{color:#b3261e;margin-top:12px}
+</style>
+</head>
+<body>
+<div class="wrapw">
+  <div id="pairing" class="center" hidden>
+    <h1>Barista ekranını bağla</h1>
+    <p class="lead">Telefonundan Tastamam uygulamasını aç: <strong>İşletme → Barista ekranı tanımla</strong> ve aşağıdaki kodu okut.</p>
+    <div id="qr"></div>
+    <p class="muted">Bağlandıktan sonra bu sayfa otomatik olarak siparişleri göstermeye başlar. Oturum süresizdir, sayfayı kapatıp açsan da tekrar bağlamana gerek kalmaz.</p>
+    <button class="alt small" id="newcode">Yeni kod üret</button>
+  </div>
+
+  <div id="panel" hidden>
+    <div class="bar">
+      <div>
+        <h1 id="cafe">Barista ekranı</h1>
+        <span class="muted" id="count"></span>
+      </div>
+      <div>
+        <span class="pill" id="conn">bağlanıyor…</span>
+        <button class="alt small" id="sound">Sesi aç</button>
+      </div>
+    </div>
+    <div id="orders" class="grid"></div>
+    <div id="empty" class="empty" hidden>Bekleyen sipariş yok. Yeni siparişler burada sesle birlikte belirir.</div>
+  </div>
+
+  <div id="loading" class="center">Yükleniyor…</div>
+  <div id="err"></div>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+<script type="module">
+import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js';
+import { getAuth, signInAnonymously, onAuthStateChanged } from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js';
+import { getFirestore, doc, getDoc, setDoc, deleteDoc, onSnapshot, collection, query, where, orderBy, updateDoc, serverTimestamp } from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js';
+
+const app = initializeApp({
+  apiKey: 'AIzaSyA_QrBGR8PnVKa9CYeYkft0iHTMZLgCfh8',
+  authDomain: 'tastamam-4c4b0.firebaseapp.com',
+  projectId: 'tastamam-4c4b0',
+  appId: '1:273353929874:web:acf304d93f0bc1c113624b',
+});
+const auth = getAuth(app);
+const db = getFirestore(app);
+const $ = (id) => document.getElementById(id);
+const money = (m) => (m % 100 === 0 ? `${m / 100}₺` : `${(m / 100).toFixed(2)}₺`);
+const QR_PREFIX = 'tastamam-barista:';
+
+let unsubDevice = null, unsubOrders = null, audioCtx = null, soundOn = false, known = new Set(), first = true;
+
+function show(which) {
+  for (const id of ['pairing', 'panel', 'loading']) $(id).hidden = id !== which;
+}
+function fail(msg) { $('err').textContent = msg; }
+
+function randomCode() {
+  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789';
+  const bytes = crypto.getRandomValues(new Uint8Array(24));
+  return Array.from(bytes, (b) => chars[b % chars.length]).join('');
+}
+
+async function showPairing(uid) {
+  show('pairing');
+  let code = localStorage.getItem('tastamam.pairCode');
+  if (code) {
+    const snap = await getDoc(doc(db, 'baristaPairings', code)).catch(() => null);
+    if (!snap || !snap.exists() || snap.data().status !== 'waiting') code = null;
+  }
+  if (!code) {
+    code = randomCode();
+    await setDoc(doc(db, 'baristaPairings', code), { deviceUid: uid, status: 'waiting', createdAt: serverTimestamp() });
+    localStorage.setItem('tastamam.pairCode', code);
+  }
+  $('qr').innerHTML = '';
+  new QRCode($('qr'), { text: QR_PREFIX + code, width: 260, height: 260, correctLevel: QRCode.CorrectLevel.M });
+}
+
+$('newcode').onclick = async () => {
+  const old = localStorage.getItem('tastamam.pairCode');
+  if (old) await deleteDoc(doc(db, 'baristaPairings', old)).catch(() => {});
+  localStorage.removeItem('tastamam.pairCode');
+  await showPairing(auth.currentUser.uid);
+};
+
+function beep() {
+  if (!soundOn) return;
+  try {
+    audioCtx = audioCtx || new (window.AudioContext || window.webkitAudioContext)();
+    const o = audioCtx.createOscillator(), g = audioCtx.createGain();
+    o.connect(g); g.connect(audioCtx.destination);
+    o.frequency.value = 880; g.gain.value = 0.15;
+    o.start(); o.stop(audioCtx.currentTime + 0.25);
+  } catch (_) {}
+}
+$('sound').onclick = () => {
+  soundOn = !soundOn;
+  $('sound').textContent = soundOn ? 'Sesi kapat' : 'Sesi aç';
+  if (soundOn) beep();
+};
+
+async function keepAwake() {
+  try { if ('wakeLock' in navigator) await navigator.wakeLock.request('screen'); } catch (_) {}
+}
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') keepAwake(); });
+
+const place = (o) => (o.mode === 'tableService' ? `Masa ${o.tableNo}` : `Kod ${o.code || '—'}`);
+const statusLabel = { preparing: 'Hazırlanıyor', ready: 'Hazır', served: 'Teslim edildi' };
+
+async function act(id, data) {
+  try { await updateDoc(doc(db, 'orders', id), { ...data, updatedAt: serverTimestamp() }); }
+  catch (e) { fail('İşlem yapılamadı. Bağlantını kontrol et.'); }
+}
+
+function render(docs) {
+  const box = $('orders');
+  box.innerHTML = '';
+  $('empty').hidden = docs.length > 0;
+  $('count').textContent = `${docs.length} açık sipariş`;
+  const ids = new Set(docs.map((d) => d.id));
+  const added = docs.filter((d) => !known.has(d.id));
+  if (!first && added.length) beep();
+  known = ids; first = false;
+  for (const d of docs) {
+    const o = d.data();
+    const total = o.totalMinor || 0;
+    const el = document.createElement('div');
+    el.className = 'order' + (added.includes(d) && !first ? ' new' : '');
+    const lines = (o.lines || []).map((l) => `<div>${l.qty} × ${l.name}</div>`).join('');
+    let pay = '';
+    if (total > 0) {
+      if (o.paymentStatus === 'unpaid') pay = `<div class="pay due">Kasadan ödenecek: ${money(total)} — POS'a aktar</div>`;
+      else if (o.paymentStatus === 'paid_counter') pay = `<div class="pay ok">Kasada ödendi</div>`;
+      else pay = `<div class="pay ok">Kartla ödendi (test)</div>`;
+    }
+    el.innerHTML = `<span class="status">${statusLabel[o.status] || ''}</span><div class="place">${place(o)}</div>
+      <div class="lines">${lines}</div>${o.freeMinor > 0 ? '<div class="muted">Bedava kahve kullanıldı</div>' : ''}${pay}`;
+    if (total > 0 && o.paymentStatus === 'unpaid') {
+      const b = document.createElement('button'); b.className = 'alt'; b.textContent = 'Ödeme alındı';
+      b.onclick = () => act(d.id, { paymentStatus: 'paid_counter' }); el.appendChild(b);
+    }
+    if (o.status === 'preparing') {
+      const b = document.createElement('button'); b.textContent = 'Hazır';
+      b.onclick = () => act(d.id, { status: 'ready' }); el.appendChild(b);
+    } else if (o.status === 'ready') {
+      const b = document.createElement('button'); b.textContent = 'Teslim edildi';
+      b.onclick = () => act(d.id, { status: 'served' }); el.appendChild(b);
+    }
+    box.appendChild(el);
+  }
+}
+
+async function startPanel(businessId) {
+  show('panel');
+  keepAwake();
+  const biz = await getDoc(doc(db, 'businesses', businessId)).catch(() => null);
+  if (biz && biz.exists()) $('cafe').textContent = biz.data().name;
+  if (unsubOrders) unsubOrders();
+  const q = query(collection(db, 'orders'), where('businessId', '==', businessId), where('status', 'in', ['preparing', 'ready']), orderBy('createdAt', 'desc'));
+  unsubOrders = onSnapshot(q, (snap) => { $('conn').textContent = 'canlı'; render(snap.docs); },
+    () => { $('conn').textContent = 'bağlantı sorunu'; fail('Siparişler okunamadı. Yetki kaldırılmış olabilir; sayfayı yenile.'); });
+}
+
+onAuthStateChanged(auth, async (user) => {
+  if (!user) { try { await signInAnonymously(auth); } catch (e) { show('loading'); $('loading').textContent = ''; fail('Oturum açılamadı. Yönetici Firebase\'de anonim girişi açmamış olabilir.'); } return; }
+  if (unsubDevice) unsubDevice();
+  let current = null;
+  unsubDevice = onSnapshot(doc(db, 'baristaDevices', user.uid), async (snap) => {
+    if (snap.exists()) {
+      const id = snap.data().businessId;
+      if (id !== current) { current = id; fail(''); await startPanel(id); }
+    } else {
+      current = null;
+      if (unsubOrders) { unsubOrders(); unsubOrders = null; }
+      await showPairing(user.uid);
+    }
+  }, () => fail('Cihaz bilgisi okunamadı.'));
+});
+</script>
+</body>
+</html>
