@@ -46,6 +46,8 @@
     <div id="qr"></div>
     <p class="muted">Bağlandıktan sonra bu sayfa otomatik olarak siparişleri göstermeye başlar. Oturum süresizdir, sayfayı kapatıp açsan da tekrar bağlamana gerek kalmaz.</p>
     <button class="alt small" id="newcode">Yeni kod üret</button>
+    <p><button class="small" id="previewbtn">Bağladım (önizleme)</button></p>
+    <p class="muted">Önizleme, örnek siparişlerle panelin içini gösterir; gerçek siparişlere bağlanmaz.</p>
   </div>
 
   <div id="panel" hidden>
@@ -56,6 +58,7 @@
       </div>
       <div>
         <span class="pill" id="conn">bağlanıyor…</span>
+        <button class="alt small" id="exitpreview" hidden>Önizlemeden çık</button>
         <button class="alt small" id="sound">Sesi aç</button>
       </div>
     </div>
@@ -97,7 +100,7 @@ const POS_BRANDS = {
   paynet: 'Paynet', sipay: 'Sipay',
 };
 
-let unsubDevice = null, unsubOrders = null, unsubDeliv = null, audioCtx = null, soundOn = false;
+let unsubDevice = null, unsubOrders = null, unsubDeliv = null, audioCtx = null, soundOn = false, preview = false;
 let tab = 'table', biz = { id: '', name: '', posBrand: 'other' };
 let tableDocs = [], delivDocs = [];
 const knownIds = { table: new Set(), home: new Set(), pickup: new Set() };
@@ -159,6 +162,18 @@ document.addEventListener('visibilitychange', () => { if (document.visibilitySta
 // ---- yardımcılar -----------------------------------------------------------------------------
 
 async function write(col, id, data) {
+  if (preview) {
+    const d = [...tableDocs, ...delivDocs].find((x) => x.id === id);
+    if (d) {
+      Object.assign(d._o, data);
+      if (['served', 'delivered', 'collected'].includes(d._o.status)) { tableDocs = tableDocs.filter((x) => x.id !== id); delivDocs = delivDocs.filter((x) => x.id !== id); }
+      if (data.status === 'courier_requested') setTimeout(() => {
+        // Önizleme: bir kurye üstlenmiş gibi göster.
+        if (preview && d._o.status === 'courier_requested') { Object.assign(d._o, { status: 'courier_assigned', courierName: 'Örnek Kurye', courierPhone: '05320001122' }); render(); }
+      }, 3000);
+    }
+    render(); return;
+  }
   try { await updateDoc(doc(db, col, id), { ...data, updatedAt: serverTimestamp() }); fail(''); }
   catch (e) { fail('İşlem yapılamadı: durum başka bir yerden değişmiş olabilir. Bağlantını kontrol edip tekrar dene.'); }
 }
@@ -293,6 +308,35 @@ function trackNew(kind, docs, flag) {
   knownIds[kind] = ids;
 }
 
+// ---- önizleme (örnek veri, hiçbir yere yazmaz) ------------------------------------------------------
+const mk = (id, o) => ({ id, _o: o, data: () => o });
+function startPreview() {
+  preview = true;
+  if (unsubDevice) { unsubDevice(); unsubDevice = null; }
+  biz = { id: 'onizleme', name: 'Kahve Molası (önizleme)', posBrand: 'ingenico' };
+  const lines = (l) => l.map(([qty, name]) => ({ qty, name, unitMinor: 10000 }));
+  tableDocs = [
+    mk('t1', { mode: 'tableService', tableNo: 4, lines: lines([[2, 'Filtre Kahve'], [1, 'Brownie']]), totalMinor: 32000, freeMinor: 0, status: 'preparing', paymentMethod: 'counter', paymentStatus: 'unpaid' }),
+    mk('t2', { mode: 'selfService', code: 'K7M2', lines: lines([[1, 'Latte']]), totalMinor: 12000, freeMinor: 0, status: 'ready', paymentMethod: 'card_test', paymentStatus: 'paid_test' }),
+  ];
+  delivDocs = [
+    mk('h1', { kind: 'home', status: 'placed', lines: lines([[2, 'Latte'], [1, 'Cheesecake']]), totalMinor: 36000, paymentMethod: 'card_test', paymentStatus: 'paid_test' }),
+    mk('h2', { kind: 'home', status: 'courier_assigned', courierName: 'Ali K.', courierPhone: '05329990011', lines: lines([[1, 'Filtre Kahve']]), totalMinor: 9500, paymentMethod: 'card_test', paymentStatus: 'paid_test' }),
+    mk('p1', { kind: 'pickup', status: 'preparing', pickupTime: '18:30', lines: lines([[3, 'Mocha']]), totalMinor: 39000, paymentMethod: 'counter', paymentStatus: 'unpaid' }),
+  ];
+  contacts.set('h1', { name: 'Ayşe Yılmaz', phone: '05321234567', address: 'Kayapınar Mah. 12. Sk. No:4 Diyarbakır' });
+  contacts.set('h2', { name: 'Mehmet Demir', phone: '05325556677', address: 'Bağlar Mah. Gazi Cd. No:21 D:3 Diyarbakır' });
+  contacts.set('p1', { name: 'Zeynep Kaya', phone: '05327778899', address: '' });
+  $('cafe').textContent = biz.name;
+  $('posinfo').textContent = 'POS: Ingenico (önizleme)';
+  $('conn').textContent = 'ÖNİZLEME · örnek veri';
+  $('exitpreview').hidden = false;
+  show('panel'); render();
+}
+$('previewbtn').onclick = startPreview;
+$('exitpreview').onclick = () => { location.href = location.pathname; };
+if (new URLSearchParams(location.search).has('onizleme')) startPreview();
+
 async function startPanel(businessId) {
   show('panel'); keepAwake();
   biz.id = businessId;
@@ -320,14 +364,16 @@ async function startPanel(businessId) {
 }
 
 onAuthStateChanged(auth, async (user) => {
+  if (preview) return;
   if (!user) { try { await signInAnonymously(auth); } catch (e) { show('loading'); $('loading').textContent = ''; fail('Oturum açılamadı. Firebase\'de anonim giriş kapalı olabilir.'); } return; }
   if (unsubDevice) unsubDevice();
   let current = null;
   unsubDevice = onSnapshot(doc(db, 'baristaDevices', user.uid), async (snap) => {
     if (snap.exists()) {
       const id = snap.data().businessId;
-      if (id !== current) { current = id; fail(''); await startPanel(id); }
+      if (!preview && id !== current) { current = id; fail(''); await startPanel(id); }
     } else {
+      if (preview) return;
       current = null;
       if (unsubOrders) { unsubOrders(); unsubOrders = null; }
       if (unsubDeliv) { unsubDeliv(); unsubDeliv = null; }
