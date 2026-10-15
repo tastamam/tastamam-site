@@ -281,10 +281,36 @@ async function fillContacts() {
   }
 }
 
+
+const GUIDE = [
+  ['Uygulamadan gelen siparişi hazırlama', '45 sn', [
+    'Masa / Kasa sekmesinde yeni sipariş en üstte görünür; masa numarası ya da sipariş kodu yazar.',
+    'Hazır olunca "Hazır"a dokun. Masaya servis ya da kasada teslimden sonra "Teslim edildi"ye dokun.',
+    'Kasada ödenecek siparişte önce "POS\'a gönder", POS\'ta işlem olunca "Ödeme alındı"ya dokun.']],
+  ['Eve sipariş ve Gel-Al', '45 sn', [
+    'Eve sipariş sekmesinde kurye çağırabilir ya da kendi kuryenle gönderebilirsin.',
+    'Gel-Al siparişinde müşteri saatinde gelir; hazır olunca "Hazır"a, teslimde "Teslim edildi"ye dokun.']],
+  ['Bedava kahve hakkı kullanılırsa', '30 sn', [
+    'Abonelik ya da paso hakkını müşteri uygulamadan kendisi kullanır; senin okutman gerekmez.',
+    'Siparişte "bedava kahve" yazar; o kahveden ücret alınmaz. Hak kontrolü uygulamada yapılır.']],
+  ['Müşteri QR kodunu okutma', '30 sn', [
+    'Müşterinin telefonundaki kodu okut; kalan hakkı ve ürünü kontrol edip tek dokunuşla onayla.']],
+  ['İnternet kesilirse', '30 sn', [
+    'Bağlantı gelince bekleyen işlemler otomatik gönderilir.',
+    'Bu sürede yeni siparişler görünmeyebilir; bağlantıyı kontrol et ve sayfayı yenile.']],
+];
+
+function guideCard([title, secs, steps], i) {
+  const el = document.createElement('div');
+  el.className = 'order';
+  el.innerHTML = `<h3 style="margin:0 0 6px">${i + 1}. ${esc(title)} <span class="muted">· ${esc(secs)}</span></h3><ol>${steps.map((x) => `<li>${esc(x)}</li>`).join('')}</ol>`;
+  return el;
+}
+
 function render() {
   const homeDocs = delivDocs.filter((d) => d.data().kind === 'home');
   const pickDocs = delivDocs.filter((d) => d.data().kind === 'pickup');
-  const defs = [['table', 'Masa / Kasa', tableDocs], ['home', 'Eve sipariş', homeDocs], ['pickup', 'Gel-Al', pickDocs]];
+  const defs = [['table', 'Masa / Kasa', tableDocs], ['home', 'Eve sipariş', homeDocs], ['pickup', 'Gel-Al', pickDocs], ['guide', 'Rehber', []]];
   const tabs = $('tabs'); tabs.innerHTML = '';
   for (const [key, label, list] of defs) {
     const b = document.createElement('button');
@@ -295,6 +321,7 @@ function render() {
   }
   const current = defs.find((x) => x[0] === tab)[2];
   const box = $('orders'); box.innerHTML = '';
+  if (tab === 'guide') { $('empty').hidden = true; GUIDE.forEach((g, i) => box.appendChild(guideCard(g, i))); fillContacts(); return; }
   $('empty').hidden = current.length > 0;
   $('empty').textContent = tab === 'table' ? 'Bekleyen masa/kasa siparişi yok.' : tab === 'home' ? 'Bekleyen eve sipariş yok.' : 'Bekleyen Gel-Al siparişi yok.';
   for (const d of current) box.appendChild(tab === 'table' ? tableCard(d) : deliveryCard(d));
